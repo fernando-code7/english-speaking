@@ -1,0 +1,241 @@
+import { useState, useRef, useEffect } from "react";
+
+const TOPICS = [
+  { emoji: "✈️", label: "Travel" },
+  { emoji: "🍜", label: "Food" },
+  { emoji: "🏠", label: "Daily Life" },
+  { emoji: "💼", label: "Work" },
+  { emoji: "🎬", label: "Movies & TV" },
+  { emoji: "🏅", label: "Sports" },
+  { emoji: "📚", label: "Education" },
+  { emoji: "🌍", label: "Culture" },
+];
+
+const SYSTEM_PROMPT = (topic) => `You are a friendly English conversation partner helping a learner practice speaking English. The topic is: "${topic}".
+
+Your job:
+1. Have a natural, engaging conversation on the topic.
+2. Ask one clear question at a time to keep the conversation going.
+3. Keep your replies short (2-4 sentences max).
+4. At the END of every reply, add a grammar correction section using this EXACT format (only if there are mistakes, otherwise skip it):
+
+---GRAMMAR---
+❌ What they said: [their exact wrong sentence]
+✅ Correction: [corrected sentence]
+💡 Tip: [short explanation]
+---END---
+
+If their grammar is perfect, do NOT include the grammar section at all.
+Start by warmly greeting them and asking an opening question about the topic.`;
+
+export default function App() {
+  const [screen, setScreen] = useState("topics"); // topics | chat
+  const [topic, setTopic] = useState(null);
+  const [messages, setMessages] = useState([]); // {role, content, correction}
+  const [history, setHistory] = useState([]); // for API
+  const [listening, setListening] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [error, setError] = useState("");
+  const bottomRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  const startTopic = async (t) => {
+    setTopic(t);
+    setMessages([]);
+    setHistory([]);
+    setScreen("chat");
+    setLoading(true);
+    setError("");
+    await getAIReply([], t);
+  };
+
+  const speak = (text) => {
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = "en-US";
+    utt.rate = 0.92;
+    utt.pitch = 1.05;
+    // Prefer a natural English voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.lang.startsWith("en") && v.name.toLowerCase().includes("female"))
+      || voices.find(v => v.lang.startsWith("en-US"))
+      || voices.find(v => v.lang.startsWith("en"));
+    if (preferred) utt.voice = preferred;
+    window.speechSynthesis.speak(utt);
+  };
+
+  const parseReply = (raw) => {
+    const grammarMatch = raw.match(/---GRAMMAR---([\s\S]*?)---END---/);
+    let correction = null;
+    let text = raw.replace(/---GRAMMAR---([\s\S]*?)---END---/, "").trim();
+    if (grammarMatch) {
+      correction = grammarMatch[1].trim();
+    }
+    return { text, correction };
+  };
+
+  const getAIReply = async (hist, t = topic) => {
+    setLoading(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: SYSTEM_PROMPT(t),
+          messages: hist.length ? hist : [{ role: "user", content: "Start the conversation." }],
+        }),
+      });
+      const data = await res.json();
+      const raw = data.content?.map(b => b.text || "").join("") || "";
+      const { text, correction } = parseReply(raw);
+      const aiMsg = { role: "assistant", content: text, correction };
+      speak(text);
+      setMessages(prev => [...prev, aiMsg]);
+      setHistory(prev => [...prev, { role: "assistant", content: raw }]);
+    } catch (e) {
+      setError("Something went wrong. Please try again.");
+    }
+    setLoading(false);
+  };
+
+  const sendMessage = async (text) => {
+    if (!text.trim()) return;
+    const userMsg = { role: "user", content: text };
+    setMessages(prev => [...prev, userMsg]);
+    const newHist = [...history, { role: "user", content: text }];
+    setHistory(newHist);
+    setTranscript("");
+    await getAIReply(newHist);
+  };
+
+  const startListening = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setError("Speech recognition not supported in this browser. Try Chrome."); return; }
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = true;
+    rec.continuous = false;
+    recognitionRef.current = rec;
+    rec.onstart = () => setListening(true);
+    rec.onresult = (e) => {
+      const t = Array.from(e.results).map(r => r[0].transcript).join("");
+      setTranscript(t);
+    };
+    rec.onend = () => {
+      setListening(false);
+      if (transcript) sendMessage(transcript);
+    };
+    rec.onerror = () => { setListening(false); setError("Mic error. Please allow microphone access."); };
+    rec.start();
+  };
+
+  const stopListening = () => {
+    recognitionRef.current?.stop();
+    setListening(false);
+  };
+
+  if (screen === "topics") return (
+    <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, fontFamily: "'Segoe UI', sans-serif" }}>
+      <div style={{ textAlign: "center", marginBottom: 32 }}>
+        <div style={{ fontSize: 48, marginBottom: 8 }}>🎤</div>
+        <h1 style={{ color: "#fff", fontSize: 28, fontWeight: 700, margin: 0 }}>English Speaking Practice</h1>
+        <p style={{ color: "rgba(255,255,255,0.8)", marginTop: 8, fontSize: 15 }}>Choose a topic to start your conversation</p>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, width: "100%", maxWidth: 420 }}>
+        {TOPICS.map(t => (
+          <button key={t.label} onClick={() => startTopic(t.label)}
+            style={{ background: "rgba(255,255,255,0.15)", backdropFilter: "blur(10px)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 16, padding: "18px 12px", cursor: "pointer", color: "#fff", fontSize: 15, fontWeight: 600, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, transition: "all 0.2s" }}
+            onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.28)"}
+            onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.15)"}>
+            <span style={{ fontSize: 28 }}>{t.emoji}</span>{t.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f0f2ff", display: "flex", flexDirection: "column", fontFamily: "'Segoe UI', sans-serif" }}>
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, #667eea, #764ba2)", padding: "14px 20px", display: "flex", alignItems: "center", gap: 12, boxShadow: "0 2px 12px rgba(0,0,0,0.15)" }}>
+        <button onClick={() => setScreen("topics")} style={{ background: "rgba(255,255,255,0.2)", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", cursor: "pointer", fontSize: 13 }}>← Topics</button>
+        <span style={{ color: "#fff", fontWeight: 700, fontSize: 16 }}>🎤 Topic: {topic}</span>
+        <button onClick={() => window.speechSynthesis.cancel()} style={{ marginLeft: "auto", background: "rgba(255,255,255,0.2)", border: "none", borderRadius: 8, color: "#fff", padding: "6px 12px", cursor: "pointer", fontSize: 13 }}>🔇 Stop</button>
+      </div>
+
+      {/* Messages */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 680, width: "100%", margin: "0 auto" }}>
+        {messages.map((m, i) => (
+          <div key={i}>
+            <div style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+              <div style={{
+                maxWidth: "80%", padding: "12px 16px", borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                background: m.role === "user" ? "linear-gradient(135deg,#667eea,#764ba2)" : "#fff",
+                color: m.role === "user" ? "#fff" : "#333",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.1)", fontSize: 15, lineHeight: 1.5
+              }}>
+                {m.role === "assistant" && <div style={{ fontSize: 11, color: "#999", marginBottom: 4, fontWeight: 600 }}>AI COACH</div>}
+                {m.content}
+              </div>
+            </div>
+            {/* Grammar correction */}
+            {m.role === "assistant" && m.correction && (
+              <div style={{ margin: "8px 0 0 4px", background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 12, padding: "12px 14px", maxWidth: "90%", fontSize: 14 }}>
+                <div style={{ fontWeight: 700, color: "#f57c00", marginBottom: 6, fontSize: 13 }}>📝 Grammar Feedback</div>
+                {m.correction.split("\n").filter(Boolean).map((line, j) => (
+                  <div key={j} style={{ marginBottom: 4, color: "#555", lineHeight: 1.5 }}>{line}</div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        {loading && (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "12px 16px", background: "#fff", borderRadius: 18, maxWidth: 80, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+            {[0,1,2].map(i => (
+              <div key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: "#667eea", animation: "bounce 1s infinite", animationDelay: `${i*0.2}s` }} />
+            ))}
+          </div>
+        )}
+        {error && <div style={{ color: "#e53935", background: "#ffebee", borderRadius: 10, padding: "10px 14px", fontSize: 14 }}>{error}</div>}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input area */}
+      <div style={{ background: "#fff", borderTop: "1px solid #e0e0e0", padding: "16px 20px", maxWidth: 680, width: "100%", margin: "0 auto", boxSizing: "border-box" }}>
+        {transcript && (
+          <div style={{ background: "#f3f0ff", borderRadius: 10, padding: "8px 12px", marginBottom: 10, fontSize: 14, color: "#555" }}>
+            🎙️ <em>{transcript}</em>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <input
+            placeholder="Or type your answer here..."
+            value={transcript}
+            onChange={e => setTranscript(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && sendMessage(transcript)}
+            style={{ flex: 1, padding: "12px 16px", borderRadius: 24, border: "1.5px solid #ddd", fontSize: 15, outline: "none", background: "#f9f9f9" }}
+          />
+          <button onClick={sendMessage.bind(null, transcript)} disabled={!transcript || loading}
+            style={{ background: "linear-gradient(135deg,#667eea,#764ba2)", border: "none", borderRadius: "50%", width: 46, height: 46, cursor: "pointer", color: "#fff", fontSize: 18, flexShrink: 0, opacity: (!transcript || loading) ? 0.5 : 1 }}>
+            ➤
+          </button>
+          <button onClick={listening ? stopListening : startListening} disabled={loading}
+            style={{ background: listening ? "linear-gradient(135deg,#ff5252,#d32f2f)" : "linear-gradient(135deg,#43a047,#1b5e20)", border: "none", borderRadius: "50%", width: 46, height: 46, cursor: "pointer", color: "#fff", fontSize: 20, flexShrink: 0, boxShadow: listening ? "0 0 0 4px rgba(255,82,82,0.3)" : "none", transition: "all 0.2s" }}>
+            {listening ? "⏹" : "🎤"}
+          </button>
+        </div>
+        <div style={{ textAlign: "center", fontSize: 12, color: "#aaa", marginTop: 8 }}>
+          {listening ? "🔴 Listening... tap stop when done" : "Tap 🎤 to speak or type your answer"}
+        </div>
+      </div>
+      <style>{`@keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }`}</style>
+    </div>
+  );
+}
